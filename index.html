@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>IEP Scheduler</title>
+<link rel="icon" href="favicon.ico" type="image/vnd.microsoft.icon" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700&display=swap" rel="stylesheet">
+
+<script src="https://unpkg.com/xlsx/dist/xlsx.full.min.js"></script>
+
+<style>
+
+:root{
+    --school-red:#bd1e2c;
+    --bg:#f7f8fa;
+    --card:#ffffff;
+    --text:#333;
+}
+
+*{
+    box-sizing:border-box;
+}
+
+body{
+    margin:0;
+    background:var(--bg);
+    color:var(--text);
+    font-family:'Nunito',sans-serif;
+}
+
+header{
+    background:white;
+    border-top:8px solid var(--school-red);
+    box-shadow:0 2px 8px rgba(0,0,0,.08);
+    padding:24px;
+}
+
+header h1{
+    margin:0;
+    font-weight:700;
+}
+
+header p{
+    margin-top:6px;
+    color:#666;
+}
+
+main{
+    max-width:1100px;
+    margin:30px auto;
+    padding:0 20px;
+}
+
+.card{
+    background:var(--card);
+    border-left:6px solid var(--school-red);
+    border-radius:12px;
+    padding:24px;
+    box-shadow:0 4px 12px rgba(0,0,0,.08);
+}
+
+.controls{
+    display:flex;
+    flex-wrap:wrap;
+    gap:20px;
+    align-items: flex-start;
+}
+
+.control{
+    display:flex;
+    flex-direction:column;
+	flex:1;
+}
+
+label{
+    font-weight:700;
+    margin-bottom:6px;
+}
+
+input[type="date"],
+input[type="file"]{
+    font-family:'Nunito';
+    font-size:15px;
+    font-weight:600;
+    padding:8px;
+}
+
+input[type="date"] {
+  width: 100%;
+  max-width: 200px;
+}
+
+button{
+    margin-top:25px;
+    background:var(--school-red);
+    color:white;
+    border:none;
+    border-radius:8px;
+    padding:12px 22px;
+    font-family:'Nunito';
+    font-weight:700;
+    font-size:16px;
+    cursor:pointer;
+    transition:.2s;
+}
+
+button:hover{
+    transform:translateY(-2px);
+}
+
+table{
+    width:100%;
+    margin-top:25px;
+    border-collapse:collapse;
+}
+
+th{
+    background:var(--school-red);
+    color:white;
+    padding:10px;
+    text-align:left;
+}
+
+td{
+    padding:9px;
+    border-bottom:1px solid #ddd;
+}
+
+tbody tr:nth-child(even){
+    background:#fafafa;
+}
+
+#downloadBtn{
+    display:none;
+}
+
+#results{
+    display:none;
+}
+
+.footerStripe{
+    margin-top:40px;
+    height:2px;
+    background:#bd1e2c;
+    opacity:.18;
+    border-radius:2px;
+}
+
+</style>
+</head>
+
+<body>
+
+<header>
+    <h1>IEP Annual Meeting Estimator</h1>
+</header>
+
+<main>
+
+<div class="card">
+
+<div class="controls">
+
+<div class="control">
+    <label>Academic Calendar (HTML)</label>
+    <input
+        id="calendarInput"
+        type="file"
+        accept=".html,.htm">
+		<div id="calendarStatus" style="margin-top:8px;color:#666;">
+    No calendar loaded.
+</div>
+</div>
+
+
+<div class="control">
+<label>End Date</label>
+<input id="endDate" type="date" value="2021-04-30">
+</div>
+
+
+<div class="control">
+<label>Select Excel File</label>
+<input id="fileInput" type="file" accept=".xlsx,.xls">
+</div>
+
+</div>
+
+<div id="results">
+
+<table id="table"></table>
+
+<button id="downloadBtn">
+Download Updated Excel
+</button>
+
+</div>
+
+</div>
+
+<div class="footerStripe"></div>
+
+</main>
+
+<script>
+
+document.addEventListener("DOMContentLoaded", () => {
+	const endDateEl = document.getElementById("endDate");
+    let endDate = new Date(endDateEl.value);
+	
+	const today = new Date();
+	const currentYear = today.getFullYear();
+
+	// April is index 3 because JavaScript months are 0-indexed (Jan = 0, Feb = 1...)
+	const april30ThisYear = new Date(currentYear, 3, 30);
+
+	// If today is after April 30, target April 30 of next year
+	if (today > april30ThisYear) {
+		endDate = new Date(currentYear + 1, 3, 30);
+		console.log("Updating end date:",endDate.toDateString());
+		endDateEl.valueAsDate = endDate;
+	}
+});
+
+let closedDays = new Map();
+let calendarLoaded = false;
+let workbook;
+let worksheetData;
+let hasHeader;
+
+const DATE_COL = 1;
+const NEW_COL_TITLE = "Est. Meeting Date";
+
+document.getElementById("calendarInput").addEventListener("change", loadCalendar);
+document.getElementById("fileInput").addEventListener("change", handleFile);
+
+//////////////////////////////////////////////////////////////
+// MAIN FUNCTION
+//////////////////////////////////////////////////////////////
+
+function preprocessRow(row, lastDate)
+{
+	const renewal = new Date(row[DATE_COL]);
+	return rawTwoWeeks(renewal, lastDate);
+}
+
+function postprocess()
+{
+	for (let i = worksheetData.length-1; i > 1; i--) {
+		let curr = new Date(worksheetData[i][2]);
+		let prev = new Date(worksheetData[i-1][2]);
+		
+		console.log("curr:",curr.toDateString());
+		console.log("prev:",prev.toDateString());
+		
+		const twoDaysBeforeCurr = new Date(curr);
+		twoDaysBeforeCurr.setDate(curr.getDate() - 2);
+
+		//prev <= twoDaysBeforeCurr means that prev is on or before two days before curr
+		//prev > twoDaysBeforeCurr means that prev is after that, i.e. NOT two days before
+		if (prev > twoDaysBeforeCurr) {
+			console.log("\tprev too close!");
+			//move back to two days before...
+			prev.setDate(twoDaysBeforeCurr.getDate());
+			console.log("\tprev - 1:",prev.toDateString());
+			//...THEN rollback!
+			rollback(prev);
+			console.log("\tprev after roll:",prev.toDateString());
+			worksheetData[i-1][2] = prev;
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////
+// CALENDAR
+//////////////////////////////////////////////////////////////
+
+async function loadCalendar(event)
+{
+    const file = event.target.files[0];
+
+    if (!file)
+        return;
+
+    const text = await file.text();
+
+    parseCalendar(text);
+
+    calendarLoaded = true;
+
+    document.getElementById("calendarStatus").textContent =
+        `${closedDays.size} closed days loaded.`;
+}
+
+function addClosedDate(year, month, day, reason)
+{
+    const date = new Date(year, month, day);
+
+    closedDays.set(
+        date.toISOString().substring(0,10),
+        reason
+    );
+}
+
+const months = {
+    jan:0,
+    feb:1,
+    mar:2,
+    apr:3,
+    may:4,
+    jun:5,
+    jul:6,
+    aug:7,
+    sep:8,
+    oct:9,
+    nov:10,
+    dec:11
+};
+
+function expandDateRange(text, reason)
+{
+    text = text.replace(":", "").trim();
+
+    //-------------------------------------------------------
+    // Jul. 3
+    //-------------------------------------------------------
+
+    let m = text.match(/^([A-Za-z]+)\.?\s+(\d+)$/);
+
+    if (m)
+    {
+        addClosedDate(
+            2026,
+            months[m[1].substr(0,3).toLowerCase()],
+            Number(m[2]),
+            reason
+        );
+
+        return;
+    }
+
+    //-------------------------------------------------------
+    // Nov. 23-27
+    //-------------------------------------------------------
+
+    m = text.match(/^([A-Za-z]+)\.?\s+(\d+)-(\d+)$/);
+
+    if (m)
+    {
+        const month = months[m[1].substr(0,3).toLowerCase()];
+
+        for (let d = Number(m[2]); d <= Number(m[3]); d++)
+        {
+            addClosedDate(
+                month >= 6 ? 2026 : 2027,
+                month,
+                d,
+                reason
+            );
+        }
+
+        return;
+    }
+
+    //-------------------------------------------------------
+    // Dec. 21-Jan. 1
+    //-------------------------------------------------------
+
+    m = text.match(
+        /^([A-Za-z]+)\.?\s+(\d+)-([A-Za-z]+)\.?\s+(\d+)$/
+    );
+
+    if (m)
+    {
+        const startMonth =
+            months[m[1].substr(0,3).toLowerCase()];
+
+        const endMonth =
+            months[m[3].substr(0,3).toLowerCase()];
+
+        let date = new Date(
+            startMonth >= 6 ? 2026 : 2027,
+            startMonth,
+            Number(m[2])
+        );
+
+        const end = new Date(
+            endMonth >= 6 ? 2026 : 2027,
+            endMonth,
+            Number(m[4])
+        );
+
+        while (date <= end)
+        {
+            closedDays.set(
+                date.toISOString().substring(0,10),
+                reason
+            );
+
+            date.setDate(date.getDate()+1);
+        }
+    }
+}
+
+function parseCalendar(html)
+{
+    closedDays.clear();
+
+    const parser = new DOMParser();
+
+    const doc = parser.parseFromString(html, "text/html");
+
+    const entries = doc.querySelectorAll("dl > div");
+
+    for (const entry of entries)
+    {
+        const dt = entry.querySelector("dt");
+        const dd = entry.querySelector("dd");
+
+        if (!dt || !dd)
+            continue;
+
+        const dateText = dt.textContent.trim();
+        const description = dd.textContent.trim();
+
+        //--------------------------------------------------
+        // Decide whether this date should count as closed.
+        //--------------------------------------------------
+
+        const lower = description.toLowerCase();
+
+        if (
+            lower.includes("division closed") ||
+            lower.includes("students do not attend") ||
+            lower.includes("spring break") ||
+            lower.includes("winter break") ||
+            lower.includes("thanksgiving break")
+        )
+        {
+            expandDateRange(dateText, description);
+        }
+    }
+}
+
+function isSchoolClosed(date)
+{
+	console.log(date.toDateString());
+	const day = date.getDay();
+	if(day === 0 || day === 4 || day === 6){ //Sun, Thu, Sat
+		console.log("\tSun, Thu, Sat");
+		return true;
+	}
+    const isClosed = closedDays.has(
+        date.toISOString().substring(0,10)
+    );
+	console.log("\t closed?",isClosed);
+	return isClosed;
+}
+
+//takes a date and keeps subtracting 1 until isSchoolClosed is false
+//mutates the date argument directly!
+function rollback(date){
+	while (isSchoolClosed(date))
+		date.setDate(date.getDate() - 1);
+}
+
+//move the date back two weeks, then move back 1 day at a time if necessary
+// (this will be the preprocessed data for the target calc)
+function rawTwoWeeks(date, lastDate){
+	let preDate = new Date(date.getTime());
+	preDate.setDate(preDate.getDate() - 14);
+	if (preDate > lastDate){
+		preDate = new Date(lastDate.getTime());
+	}
+	rollback(preDate);
+	return preDate;
+}
+
+//////////////////////////////////////////////////////////////
+// EXCEL
+//////////////////////////////////////////////////////////////
+
+function handleFile(e)
+{
+    const file = e.target.files[0];
+
+    if(!file) return;
+
+    const reader = new FileReader();
+
+    reader.onload = function(event)
+    {
+        const data = new Uint8Array(event.target.result);
+
+        workbook = XLSX.read(data,{type:"array"});
+
+        const sheetName = workbook.SheetNames[0];
+
+        const sheet = workbook.Sheets[sheetName];
+
+        worksheetData = XLSX.utils.sheet_to_json(sheet, {raw: false, header:1, blankrows: false});
+
+        processData();
+    };
+
+    reader.readAsArrayBuffer(file);
+}
+
+//use with arrow to set c
+function sortByCol(c, a, b) {
+	if (a[c] === b[c]) {
+		return 0;
+	}
+	else {
+		return (a[c] < b[c]) ? -1 : 1;
+	}
+}
+
+function processData()
+{
+	//throw away all but first 2 cols
+	worksheetData = worksheetData.map(row => row.slice(0, DATE_COL+1));
+
+	const endDateEl = document.getElementById("endDate");
+    let endDate = new Date(endDateEl.value);
+	
+	const firstRow = worksheetData[0];
+	const firstDate = new Date(firstRow[DATE_COL]);
+	hasHeader = isNaN(firstDate.getTime());
+	
+	if (hasHeader) {
+		worksheetData[0].push(NEW_COL_TITLE);
+	}
+	else{
+		worksheetData.unshift(["Name","IEP Expiration",NEW_COL_TITLE]);
+	}
+
+	for (let i = 1; i < worksheetData.length; i++) {
+		if (worksheetData[i].length > 0)
+			worksheetData[i].push(
+				preprocessRow(worksheetData[i], endDate)
+			);
+	}
+	
+	const [headRow, ...restOfRows] = worksheetData;
+
+	worksheetData = [headRow, ...restOfRows.sort((a, b) => sortByCol(1, a, b))];
+	
+	postprocess();
+	
+	worksheetData = [headRow, ...restOfRows.sort((a, b) => sortByCol(2, a, b))];
+
+    displayTable();
+
+    document.getElementById("downloadBtn").style.display="inline-block";
+    document.getElementById("results").style.display="block";
+}
+
+function displayTable()
+{
+    const table = document.getElementById("table");
+    table.innerHTML = "";
+
+    if (worksheetData.length === 0)
+        return;
+
+    const thead = document.createElement("thead");
+    const tbody = document.createElement("tbody");
+
+    //----------------------------------------------------
+    // Header
+    //----------------------------------------------------
+
+    const trHead = document.createElement("tr");
+
+	worksheetData[0].forEach(cell => {
+		const th = document.createElement("th");
+		th.textContent = cell;
+		trHead.appendChild(th);
+	});
+
+    thead.appendChild(trHead);
+    table.appendChild(thead);
+
+    //----------------------------------------------------
+    // Data
+    //----------------------------------------------------
+	
+	
+	//processData() ensures there is always a header row
+    for (let i = 1; i < worksheetData.length; i++)
+    {
+        const tr = document.createElement("tr");
+
+        worksheetData[i].forEach(cell => {
+            const td = document.createElement("td");
+            if (cell instanceof Date)
+				td.textContent = cell.toLocaleDateString();
+			else
+				td.textContent = cell;
+            tr.appendChild(td);
+        });
+
+        tbody.appendChild(tr);
+    }
+
+    table.appendChild(tbody);
+}
+
+document.getElementById("downloadBtn").addEventListener("click",()=>{
+
+    const sheet =
+        XLSX.utils.aoa_to_sheet(worksheetData);
+
+    workbook.Sheets[workbook.SheetNames[0]] = sheet;
+
+    XLSX.writeFile(workbook,"updated_renewals.xlsx");
+
+});
+
+</script>
+
+</body>
+</html>
+
+<!--
+Target should be as close to exactly 2 weeks before renewal deadline as possible (moving backwards if necessary)
+Allow to click each date, change it, and then it will recalulate later dates.
+ - Make sure to note if changes like that have been made and prevent from reloading!
+-->
