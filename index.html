@@ -227,10 +227,13 @@ document.addEventListener("DOMContentLoaded", () => {
 let closedDays = new Map();
 let calendarLoaded = false;
 let workbook;
+let excelData;
 let worksheetData;
 let hasHeader;
+let errors;
 
 const DATE_COL = 1;
+const EST_COL = DATE_COL+1;
 const NEW_COL_TITLE = "Est. Meeting Date";
 
 document.getElementById("calendarInput").addEventListener("change", loadCalendar);
@@ -240,35 +243,53 @@ document.getElementById("fileInput").addEventListener("change", handleFile);
 // MAIN FUNCTION
 //////////////////////////////////////////////////////////////
 
+function invalidDate(date){
+  return !(date instanceof Date) || Number.isNaN(date.getTime());
+}
+
 function preprocessRow(row, lastDate)
 {
 	const renewal = new Date(row[DATE_COL]);
+	if (invalidDate(renewal)){
+		errors.push(row[0]);
+		return null;
+	}
 	return rawTwoWeeks(renewal, lastDate);
 }
 
 function postprocess()
 {
 	for (let i = worksheetData.length-1; i > 1; i--) {
-		let curr = new Date(worksheetData[i][2]);
-		let prev = new Date(worksheetData[i-1][2]);
+		let curr = new Date(worksheetData[i][EST_COL]);
+		let prev = new Date(worksheetData[i-1][EST_COL]);
 		
-		console.log("curr:",curr.toDateString());
-		console.log("prev:",prev.toDateString());
+		//curr invalid: nothing to force prev to move
+		//prev invalid: nothing to move
+		if (invalidDate(curr) || invalidDate(prev)){
+			continue;
+		}
 		
-		const twoDaysBeforeCurr = new Date(curr);
-		twoDaysBeforeCurr.setDate(curr.getDate() - 2);
+		//console.log(i+" curr:",curr.toDateString());
+		//console.log(i+" prev:",prev.toDateString());
+		
+		if (curr < prev){
+			//console.log("\tCURR < PREV!!");
+			prev = new Date(curr.getTime());
+		}
+		
+		const twoDaysBeforeCurr = new Date(curr.getTime());
+		twoDaysBeforeCurr.setDate(twoDaysBeforeCurr.getDate() - 2);
 
 		//prev <= twoDaysBeforeCurr means that prev is on or before two days before curr
 		//prev > twoDaysBeforeCurr means that prev is after that, i.e. NOT two days before
 		if (prev > twoDaysBeforeCurr) {
-			console.log("\tprev too close!");
+			//console.log("\tprev too close!");
 			//move back to two days before...
-			prev.setDate(twoDaysBeforeCurr.getDate());
-			console.log("\tprev - 1:",prev.toDateString());
+			prev = twoDaysBeforeCurr;
 			//...THEN rollback!
 			rollback(prev);
-			console.log("\tprev after roll:",prev.toDateString());
-			worksheetData[i-1][2] = prev;
+			//console.log("\tprev after roll:",prev.toDateString());
+			worksheetData[i-1][EST_COL] = prev;
 		}
 	}
 }
@@ -446,16 +467,14 @@ function parseCalendar(html)
 
 function isSchoolClosed(date)
 {
-	console.log(date.toDateString());
 	const day = date.getDay();
 	if(day === 0 || day === 4 || day === 6){ //Sun, Thu, Sat
-		console.log("\tSun, Thu, Sat");
+		//console.log(date.toDateString()+" is Sun, Thu, or Sat");
 		return true;
 	}
     const isClosed = closedDays.has(
         date.toISOString().substring(0,10)
     );
-	console.log("\t closed?",isClosed);
 	return isClosed;
 }
 
@@ -500,7 +519,7 @@ function handleFile(e)
 
         const sheet = workbook.Sheets[sheetName];
 
-        worksheetData = XLSX.utils.sheet_to_json(sheet, {raw: false, header:1, blankrows: false});
+        excelData = XLSX.utils.sheet_to_json(sheet, {raw: false, header:1, blankrows: false});
 
         processData();
     };
@@ -520,33 +539,40 @@ function sortByCol(c, a, b) {
 
 function processData()
 {
+	errors = [];
+	
 	//throw away all but first 2 cols
-	worksheetData = worksheetData.map(row => row.slice(0, DATE_COL+1));
+	excelData = excelData.map(row => row.slice(0, DATE_COL+1));
 
 	const endDateEl = document.getElementById("endDate");
     let endDate = new Date(endDateEl.value);
 	
-	const firstRow = worksheetData[0];
+	const firstRow = excelData[0];
 	const firstDate = new Date(firstRow[DATE_COL]);
 	hasHeader = isNaN(firstDate.getTime());
 	
 	if (hasHeader) {
-		worksheetData[0].push(NEW_COL_TITLE);
+		firstRow.push(NEW_COL_TITLE);
 	}
 	else{
-		worksheetData.unshift(["Name","IEP Expiration",NEW_COL_TITLE]);
+		firstRow = ["Name","IEP Expiration",NEW_COL_TITLE];
 	}
+	
+	worksheetData = [firstRow];
 
-	for (let i = 1; i < worksheetData.length; i++) {
-		if (worksheetData[i].length > 0)
-			worksheetData[i].push(
-				preprocessRow(worksheetData[i], endDate)
-			);
+	for (let i = 1; i < excelData.length; i++) {
+		if (excelData[i].length > 0){
+			const val = preprocessRow(excelData[i], endDate);
+			if (val !== null){
+				excelData[i].push(val);
+				worksheetData.push(excelData[i]);
+			}
+		}
 	}
 	
 	const [headRow, ...restOfRows] = worksheetData;
 
-	worksheetData = [headRow, ...restOfRows.sort((a, b) => sortByCol(1, a, b))];
+	worksheetData = [headRow, ...restOfRows.sort((a, b) => sortByCol(2, a, b))];
 	
 	postprocess();
 	
@@ -556,6 +582,10 @@ function processData()
 
     document.getElementById("downloadBtn").style.display="inline-block";
     document.getElementById("results").style.display="block";
+	
+	if (errors.length > 0){
+		alert("The following rows could not be loaded: "+errors);
+	}
 }
 
 function displayTable()
@@ -592,6 +622,11 @@ function displayTable()
 	//processData() ensures there is always a header row
     for (let i = 1; i < worksheetData.length; i++)
     {
+		if (invalidDate(worksheetData[i][EST_COL])){
+			console.log("DisplayTable SKIPPING "+i);
+			console.log(worksheetData[i]);
+			continue;
+		}
         const tr = document.createElement("tr");
 
         worksheetData[i].forEach(cell => {
