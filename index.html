@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700&display=swap" rel="stylesheet">
-
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
 <script src="https://unpkg.com/xlsx/dist/xlsx.full.min.js"></script>
 
 <style>
@@ -79,8 +79,7 @@ label{
     margin-bottom:6px;
 }
 
-input[type="date"],
-input[type="file"]{
+input{
     font-family:'Nunito';
     font-size:15px;
     font-weight:600;
@@ -90,6 +89,11 @@ input[type="file"]{
 input[type="date"] {
   width: 100%;
   max-width: 200px;
+}
+
+input[type="number"] {
+  width: 100%;
+  min-width: 10ch;
 }
 
 button{
@@ -147,6 +151,43 @@ tbody tr:nth-child(even){
     opacity:.18;
     border-radius:2px;
 }
+#messageOverlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 1000;
+
+    /* Center the dialog */
+    align-items: center;
+    justify-content: center;
+}
+
+#messageBox {
+    position: relative;
+    background: white;
+    padding: 30px;
+    border-radius: 10px;
+    min-width: 400px;
+    max-width: 800px;
+    box-shadow: 0 5px 25px rgba(0, 0, 0, 0.3);
+}
+
+#closeMessage {
+    position: absolute;
+    top: 8px;
+    right: 12px;
+
+    border: none;
+    background: none;
+    font-size: 28px;
+    cursor: pointer;
+    color: #666;
+}
+
+#closeMessage:hover {
+    color: #000;
+}
 
 </style>
 </head>
@@ -164,14 +205,14 @@ tbody tr:nth-child(even){
 <div class="controls">
 
 <div class="control">
-    <label>Academic Calendar (HTML)</label>
+    <label>Academic Calendar (HTML) <i id="helpButton" class="fa fa-question-circle"></i></label>
     <input
         id="calendarInput"
         type="file"
         accept=".html,.htm">
 		<div id="calendarStatus" style="margin-top:8px;color:#666;">
-    No calendar loaded.
-</div>
+			No calendar loaded.
+		</div>
 </div>
 
 
@@ -180,6 +221,10 @@ tbody tr:nth-child(even){
 <input id="endDate" type="date" value="2021-04-30">
 </div>
 
+<div class="control">
+	<label>Min Gap</label>
+	<input id="minGap" type="number" value="2" min="1" max="7">
+</div>
 
 <div class="control">
 <label>Select Excel File</label>
@@ -201,6 +246,19 @@ Download Updated Excel
 </div>
 
 <div class="footerStripe"></div>
+
+<div id="messageOverlay">
+    <div id="messageBox">
+        <button id="closeMessage" aria-label="Close">&times;</button>
+        <h2>Download Academic Calendar HTML</h2>
+        <ol style="padding-bottom: 14px;">
+			<li>Go to <a href="https://www.lcsedu.net/parents/lcs-calendar" target="_blank">lcsedu.net/parents/lcs-calendar</a> and click <b>[Year] LCS School Calendar</b>.
+			<li>On the top left, click to toggle "Accessible View".
+			<li>Click the blue "Download Transcript" button on the right. (You may have to click the <i class="fa fa-bars"></i> menu button first.)
+		</ol>
+		<img src="calhtml.jpg" style="max-width: 100%; height: auto;">
+    </div>
+</div>
 
 </main>
 
@@ -231,6 +289,7 @@ let excelData;
 let worksheetData;
 let hasHeader;
 let errors;
+let gap = 2; //min gap between scheduled dates
 
 const DATE_COL = 1;
 const EST_COL = DATE_COL+1;
@@ -277,15 +336,15 @@ function postprocess()
 			prev = new Date(curr.getTime());
 		}
 		
-		const twoDaysBeforeCurr = new Date(curr.getTime());
-		twoDaysBeforeCurr.setDate(twoDaysBeforeCurr.getDate() - 2);
+		const gapDaysBeforeCurr = new Date(curr.getTime());
+		gapDaysBeforeCurr.setDate(gapDaysBeforeCurr.getDate() - gap);
 
-		//prev <= twoDaysBeforeCurr means that prev is on or before two days before curr
-		//prev > twoDaysBeforeCurr means that prev is after that, i.e. NOT two days before
-		if (prev > twoDaysBeforeCurr) {
+		//prev <= gapDaysBeforeCurr means that prev is on or before two days before curr
+		//prev > gapDaysBeforeCurr means that prev is after that, i.e. NOT two days before
+		if (prev > gapDaysBeforeCurr) {
 			//console.log("\tprev too close!");
 			//move back to two days before...
-			prev = twoDaysBeforeCurr;
+			prev = gapDaysBeforeCurr;
 			//...THEN rollback!
 			rollback(prev);
 			//console.log("\tprev after roll:",prev.toDateString());
@@ -511,6 +570,8 @@ function handleFile(e)
 
     reader.onload = function(event)
     {
+		gap = document.getElementById('minGap').valueAsNumber;
+		
         const data = new Uint8Array(event.target.result);
 
         workbook = XLSX.read(data,{type:"array"});
@@ -653,6 +714,24 @@ document.getElementById("downloadBtn").addEventListener("click",()=>{
 
     XLSX.writeFile(workbook,"updated_renewals.xlsx");
 
+});
+
+const helpButton = document.getElementById("helpButton");
+const messageOverlay = document.getElementById("messageOverlay");
+const closeMessage = document.getElementById("closeMessage");
+
+helpButton.addEventListener("click", () => {
+    messageOverlay.style.display = "flex";
+});
+
+closeMessage.addEventListener("click", () => {
+    messageOverlay.style.display = "none";
+});
+
+messageOverlay.addEventListener("click", (event) => {
+    if (event.target === messageOverlay) {
+        messageOverlay.style.display = "none";
+    }
 });
 
 </script>
